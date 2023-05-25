@@ -1,0 +1,40 @@
+{
+  "name": "EC2GOOD",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "rimraf dist && npx tsc",
+    "prestart": "npm run build",
+    "start": "node dist/index.js",
+    "preserve": "npm run build",
+    "serve": "concurrently \"npx tsc -w\" \"nodemon dist/index.js\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/idoweinstein/EC2GOOD.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/idoweinstein/EC2GOOD/issues"
+  },
+  "homepage": "https://github.com/idoweinstein/EC2GOOD#readme",
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.338.0",
+    "@types/express": "^4.17.17",
+    "@types/node": "^20.2.3",
+    "collections": "^5.1.13",
+    "concurrently": "^8.0.1",
+    "express": "^4.18.2",
+    "rimraf": "^5.0.1",
+    "typescript": "^5.0.4",
+    "typescript-collections": "^1.3.3"
+  },
+  "devDependencies": {
+    "@types/collections": "^5.1.2",
+    "nodemon": "^2.0.22"
+  }
+}
