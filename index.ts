@@ -1,17 +1,31 @@
 import express from "express";
 import { EC2Client, DescribeInstancesCommand, EC2, Instance } from "@aws-sdk/client-ec2";
+import { CloudTrailClient, LookupEventsCommand } from "@aws-sdk/client-cloudtrail"
 import * as Collections from 'typescript-collections';
+import { Mutex } from 'async-mutex';
 
+/* TODO: separate into multiple files */
+/* TODO: document */
 
 class Output {
     name?: string;
     id?: string;
-    mtype?: string;
+    type?: string;
     state?: string;
     az?: string;
-    public_ip?: string;
-    private_ips?: string[];
+    publicIP?: string;
+    privateIPs?: string[];
 }
+
+const sortableKeys = Set<string>(['name', 'id', 'type', 'state', 'az', 'publicIP']);
+
+// Cache latest unique requests
+const cacheMaxSize = 100;
+const cacheEntrySize = 500;
+// NOTE: possible limit must be a divisor of cacheEntrySize to prevent
+//       a case in which a page's content consists of more than one entry
+const possibleLimits = [1, 5, 10, 20, 25, 50, 100, 125, 250, 500];
+const defaultLimit = 10;
 
 // TODO: make user decide the region
 const credentials = {
@@ -26,13 +40,11 @@ const port = 7000;
 
 const app = express();
 
-
-// Cache latest unique requests
-// TODO: invalidate cache when necessary
-const cacheMaxSize = 100;
-const cacheEntrySize = 500;
+let instances = [];
 const cache = new Map<[string, boolean, number], [Output[], number]>;
 let counter = 0;
+const cacheTTL = 60 * 1000; // cache entry TTL is 60 seconds
+let lastValidityCheck = Date.now();
 
 app.get("/", (req, res) => {
     res.send("Hi there! (now with ts)");
@@ -48,16 +60,47 @@ function processInstance(instance: Instance) {
         }
     }
     output.id = instance.InstanceId;
-    output.mtype = instance.InstanceType;
+    output.type = instance.InstanceType;
     output.az = instance.Placement?.AvailabilityZone;
     output.state = instance.Monitoring?.State;
-    output.public_ip = instance.PublicIpAddress;
+    output.publicIP = instance.PublicIpAddress;
     if (instance.NetworkInterfaces) {
-        output.private_ips = instance.NetworkInterfaces.map(
+        output.privateIPs = instance.NetworkInterfaces.map(
             item => item.PrivateIpAddress).filter(
             item => item !== undefined) as string[];
     }
     return output;
+}
+
+async function validateCache() {
+    await mutex.runExclusive(async () => {
+        // TODO: handle a case in which multiple zones can be monitored
+        // TODO: maybe monitor just events related to instances creation/deletion/run/stop/data change
+        // TODO: consider updating data instead of clearing the cache
+        if (cache.length == 0) {
+            return;
+        }
+        const client = new CloudTrailClient(config);
+        let input = {
+            StartTime: lastValidityCheck,
+        };
+    
+        const now = Date.now();
+        // Monitor every minute
+        if ((now - lastValidityCheck) < cacheTTL) {
+            return;
+        }
+
+        const response = client.send(new LookupEventsCommand(input));
+        lastValidityCheck = now;
+    
+        if (response.?Events.length > 0) {
+            // Events happened, invalidate cache
+            cache.clear();
+            instances = await getAllInstances();
+        }
+    });
+
 }
 
 async function getAllInstances() {
@@ -94,73 +137,95 @@ function deleteOldestEntry() {
     }
 }
 
-function updateCache(sortKey: string, ascending: boolean, baseIndex: number) {
+async function updateCache(sortKey: string, ascending: boolean, baseIndex: number) {
+    await validateCache();
+
     if (cache.has([sortKey, ascending, baseIndex]) {
-        cache[[sortKey, ascending. baseIndex]] = [cache[[sortKey, ascending. baseIndex]][0], counter++];
+        cache[[sortKey, ascending. baseIndex]] = [cache[[sortKey, ascending, baseIndex]][0], counter++];
         return;
     }
-
-    const instances = await getAllInstances();
+    
     // TODO: check sizes (that both baseIndex - 1 and baseIndex + cacheEntrySize do not exceed entries.length - 1
-    const compare = (a: Output, b: output) => a[sortKey].localeCompare(b[sortKey]) * (ascending ? 1 : -1);
+    const compare = (a: Output, b: output) => sortKey ? (a[sortKey].localeCompare(b[sortKey]) * (ascending ? 1 : -1)) : a;
+    // Shallow copy the instances' data
+    const instancesDup = [...instances];
     // Get rid of elements before our elements of interest
-    quickselect(instances, baseIndex - 1, 0, entries.length - 1, compare);
-    // Move our elements of interest to indices [baseIndex, ..., baseIndex + cacheEntrySize]
-    quickselect(instances, cacheEntrySize - 1, baseIndex, entries.length - 1, compare);
-    const entry = instances.slice(baseIndex, baseIndex + cacheEntrySize).sort(compare);
+    quickselect(instancesDup, baseIndex - 1, 0, entries.length - 1, compare);
+    // Move our elements of interest to indices [baseIndex, ..., baseIndex + cacheEntrySize - 1]
+    quickselect(instancesDup, cacheEntrySize - 1, baseIndex, entries.length - 1, compare);
+    const entry = instancesDup.slice(baseIndex, baseIndex + cacheEntrySize).sort(compare);
     
     if (cache.length >= cacheMaxSize) {
         deleteOldestEntry();
     }
     
     cache[[sortKey, ascending, baseIndex]] = [entry, counter++];
+    return entry
 }
 
-function getFromCache(sortKey: string, ascending: boolean, startIndex: number, endIndex: number) {
+async function getFromCache(sortKey: string, ascending: boolean, startIndex: number, endIndex: number) {
     // Trunc number and get the base index of its entry
     const baseIndex = Math.floor(startIndex / cacheEntrySize) * cacheEntrySize;
     // TODO: assert endIndex in the same entry
-    updateCache(sortKey, ascending, basedIndex);
     // TODO: assert size of entry
-    const entry = cache.get([sortKey, ascending, basedIndex])[0];
+    
+    const entry = await updateCache(sortKey, ascending, basedIndex);
     return entry.slice(startIndex - baseIndex, endIndex - baseIndex);
 }
 
 app.get("/instances", async (req, res) =>  {
-    const sortKey = req.query.sort; // TODO: validate the key is sortable
-    const ascending = (req.query.order ?? "asc") == "asc"; // TODO: validate the key is ascending or descending
-    const page : number = +(req.query.page ?? "1"); // TODO: validate the page is an integer
-    const limit : number = +(req.query.limit ?? "10"); // TODO: assert limit is in [1,5,10,20,25,50,100]
+    let sortKey = req.query.sort;
+    let ascending = (req.query.order ?? "asc") == "asc";
+    let page : number = Math.floor(+(req.query.page ?? "1"));
+    let limit : number = Math.floor(+(req.query.limit ?? defaultLimit));
     
-    const startIndex = (page - 1) * limit;
-    const endIndex = page * limit;
+    /* Validate page value */
+    if (!(page > 0)) // Catches both non positive and NaN values
+        page = 1; // default page number is 1
     
-    for (
-
-    let outputs: Output[] = [];
-    try {
-        const resp = await client.send(new DescribeInstancesCommand({}));
+    /* Validate sortKey value */
+    if (!sortKey || !sortableKeys.has(sortKey)) {
+        sortKey = undefined;
+        ascending = true;
+    }
         
-        if (resp.Reservations) {
-            for (const machine of resp.Reservations) {
-                if (machine.Instances) {
-                    for (const instance of machine.Instances) {
-                        outputs.push(processInstance(instance));
-                    }
-                }
+    /* Validate limit value - if doesn't match, round down to a matching limit */
+    if (!(limit > 0))
+        limit = defaultLimit;
+    else if (limit >= possibleLimits[possibleLimits.length - 1])
+        limit = possibleLimits[possibleLimits.length - 1];
+    else {
+        let found = false;
+        for (int i = possibleLimits.length - 2; i >= 0; --i) {
+            if (limit >= possibleLimits[i]) {
+                limit = possibleLimits[i];
+                found = true;
+                break;
             }
         }
-    } catch (err) {
-        res.status(500)
-        res.render('error', {error: err})
-        throw err;
+        
+        if (!found) {
+            limit = defaultLimit;
+        }
     }
 
-    quickselect(outputs, limit * page, )
-    return res.send(outputs);
+    /* Get the desired instances from cache */
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
+
+    const result = await getFromCache(sortKey, ascending, startIndex, endIndex);
+    
+    /* Build and return response */
+    const output = {"sortKey": sortKey,
+                    "order": "asc" if ascending else "desc",
+                    "page": page,
+                    "limit": limit,
+                    "instances": result};
+    return res.send(sortKey);
 });
 
 
 app.listen(port, () => {
     console.log(`Listening on port ${port}`);
 });
+
