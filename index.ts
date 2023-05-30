@@ -25,10 +25,6 @@ const port = process.env.PORT || 443;
 
 const app = express();
 
-app.get("/", (req, res) => {
-    res.send("Hi there! (now with ts)");
-});
-
 // Get available regions
 app.get("/regions", async (_req, res) => {
     try {

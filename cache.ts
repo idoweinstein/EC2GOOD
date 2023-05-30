@@ -142,7 +142,6 @@ async function updateAllStatuses(region: string) {
 // Make the cached data of @region valid
 async function validateCache(region: string) {
     return await mutex.runExclusive(async () => {
-        // TODO: maybe monitor just events related to instances creation/deletion/run/stop/data change
         if (!regionsData.has(region) || !(regionsData.get(region)?.instances.length)) {
             await updateAllInstances(region);
         }
