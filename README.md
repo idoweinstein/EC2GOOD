@@ -65,7 +65,7 @@ Format of the response for a non sorted request:
 }
 ```
 
-Response of sorted request also contains the `sort` attribute.
+Response of a sorted request also contains the `sort` attribute.
 
 Examples:
 - https://server-address/us-west-2/instances/
