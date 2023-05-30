@@ -1,4 +1,4 @@
-import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, Instance } from "@aws-sdk/client-ec2";
+import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeRegionsCommand, Instance } from "@aws-sdk/client-ec2";
 import { CloudTrailClient, LookupEventsCommand, LookupEventsCommandInput } from "@aws-sdk/client-cloudtrail";
 
 export type SortKey = 'name' | 'id' | 'type' | 'state'| 'az' |'publicIP';
@@ -107,6 +107,13 @@ export async function getStatuses(region: string) {
     return await getEC2Client(region).send(new DescribeInstanceStatusCommand({
         IncludeAllInstances: true
     }));
+}
+
+// Get active regions
+export async function getRegions() {
+    return (await getEC2Client('us-west-1').send(new DescribeRegionsCommand({}))).Regions?.map(
+        (region) => region.RegionName
+    );
 }
 
 // Return true if any event has occurred in @region since @startDate
