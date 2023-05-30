@@ -21,7 +21,7 @@ const defaultLimit = 10;
 assert(possibleLimits.every((limit) => cacheEntrySize % limit === 0));
 assert(cacheEntrySize % defaultLimit === 0);
 
-const port = process.env.PORT || 8443;
+const port = process.env.PORT || 443;
 
 const app = express();
 
